@@ -20,6 +20,6 @@ jobs:
       - name: Fetch and push Oura data
         env:
           OURA_ACCESS_TOKEN: ${{ secrets.OURA_ACCESS_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           GITHUB_USERNAME: rosymcroseface
         run: python fetch_and_push.py
