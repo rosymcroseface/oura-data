@@ -1,1 +1,1 @@
-web: python oauth_handler.py
+worker: python fetch_and_push.py
