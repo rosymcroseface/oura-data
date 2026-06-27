@@ -1,12 +1,43 @@
 import requests
 import json
 import os
-import base64
 from datetime import datetime, timedelta
+from google.auth.oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+import pickle
 
 OURA_ACCESS_TOKEN = os.getenv("OURA_ACCESS_TOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
+GOOGLE_OAUTH_CREDENTIALS = os.getenv("GOOGLE_OAUTH_CREDENTIALS")
+
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+
+def get_drive_service():
+    """Get authenticated Google Drive service"""
+    creds = None
+    
+    # Try to load saved credentials
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    
+    # If no valid creds, use OAuth flow
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_string(
+                GOOGLE_OAUTH_CREDENTIALS, SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # Save credentials for next run
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+    
+    return build('drive', 'v3', credentials=creds)
 
 def fetch_oura_data():
     """Fetch all Oura data for last 30 days"""
@@ -48,51 +79,64 @@ def fetch_oura_data():
     
     return all_data
 
-def push_to_github(data):
-    """Push data to GitHub using API"""
+def upload_to_google_drive(data):
+    """Upload data to Google Drive"""
     try:
+        service = get_drive_service()
+        
         filename = "oura_data_latest.json"
         content = json.dumps(data, indent=2)
         
-        # GitHub API URL
-        url = f"https://api.github.com/repos/{GITHUB_USERNAME}/oura-data/contents/{filename}"
+        # Search for existing file
+        results = service.files().list(
+            q=f"name='{filename}' and trashed=false",
+            spaces='drive',
+            pageSize=1,
+            fields='files(id, name)'
+        ).execute()
         
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
+        files = results.get('files', [])
         
-        # Encode content
-        encoded_content = base64.b64encode(content.encode()).decode()
-        
-        # Try to get existing file (to get sha for update)
-        existing = requests.get(url, headers=headers)
-        
-        payload = {
-            "message": f"Update Oura data - {datetime.now().isoformat()}",
-            "content": encoded_content
-        }
-        
-        if existing.status_code == 200:
-            # File exists, need sha to update
-            payload["sha"] = existing.json()["sha"]
-        
-        # Create or update
-        response = requests.put(url, headers=headers, json=payload)
-        
-        if response.status_code in [201, 200]:
-            print("✓ Pushed to GitHub")
+        if files:
+            # Update existing file
+            file_id = files[0]['id']
+            media = MediaFileUpload(
+                filename='temp.json',
+                mimetype='application/json',
+                chunksize=-1
+            )
+            # Write to temp file
+            with open('temp.json', 'w') as f:
+                f.write(content)
+            
+            service.files().update(
+                fileId=file_id,
+                media_body=media
+            ).execute()
+            print("✓ Updated file on Google Drive")
         else:
-            print(f"✗ GitHub error: {response.status_code} - {response.text}")
+            # Create new file
+            with open('temp.json', 'w') as f:
+                f.write(content)
+            
+            file_metadata = {'name': filename}
+            media = MediaFileUpload('temp.json', mimetype='application/json')
+            
+            service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            print("✓ Created file on Google Drive")
             
     except Exception as e:
-        print(f"✗ Error pushing to GitHub: {e}")
+        print(f"✗ Error uploading to Google Drive: {e}")
 
 def main():
     print("Starting Oura data fetch...")
     data = fetch_oura_data()
-    print("Pushing to GitHub...")
-    push_to_github(data)
+    print("Uploading to Google Drive...")
+    upload_to_google_drive(data)
     print("✓ Done!")
 
 if __name__ == "__main__":
