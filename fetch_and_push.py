@@ -2,66 +2,36 @@ import requests
 import json
 import os
 from datetime import datetime, timedelta
-from google.auth.oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-import pickle
 
 OURA_ACCESS_TOKEN = os.getenv("OURA_ACCESS_TOKEN")
-GOOGLE_OAUTH_CREDENTIALS = os.getenv("GOOGLE_OAUTH_CREDENTIALS")
+GOOGLE_SHEETS_CREDENTIALS = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+SHEET_ID = "1qDaRZJqjmso403aD1A-uSJ0S_YJwA0wt6-_pJ1JlyF4"
 
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
-def get_drive_service():
-    """Get authenticated Google Drive service"""
-    creds = None
-    
-    # Try to load saved credentials
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-    
-    # If no valid creds, use OAuth flow
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_string(
-                GOOGLE_OAUTH_CREDENTIALS, SCOPES)
-            creds = flow.run_local_server(port=0)
-        
-        # Save credentials for next run
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-    
-    return build('drive', 'v3', credentials=creds)
+def get_sheets_service():
+    """Get authenticated Google Sheets service"""
+    creds_dict = json.loads(GOOGLE_SHEETS_CREDENTIALS)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return build('sheets', 'v4', credentials=creds)
 
 def fetch_oura_data():
     """Fetch all Oura data for last 30 days"""
     start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
     
-    all_data = {
-        "timestamp": datetime.now().isoformat(),
-        "date_range": f"{start_date} to {end_date}",
-        "data": {}
-    }
+    all_data = {}
     
-    endpoints = [
-        "daily_sleep",
-        "daily_activity",
-        "daily_readiness",
-        "daily_heart_rate",
-        "daily_spo2",
-        "daily_stress",
-        "daily_resilience",
-        "sessions",
-        "workouts",
-        "tags"
-    ]
+    endpoints = {
+        "daily_sleep": "daily_sleep",
+        "daily_activity": "daily_activity",
+        "daily_readiness": "daily_readiness",
+        "daily_heart_rate": "daily_heart_rate",
+        "daily_stress": "daily_stress",
+        "daily_resilience": "daily_resilience"
+    }
     
     for endpoint in endpoints:
         try:
@@ -70,7 +40,7 @@ def fetch_oura_data():
                 headers={"Authorization": f"Bearer {OURA_ACCESS_TOKEN}"}
             )
             if response.status_code == 200:
-                all_data["data"][endpoint] = response.json().get("data", [])
+                all_data[endpoint] = response.json().get("data", [])
                 print(f"✓ Fetched {endpoint}")
             else:
                 print(f"✗ Failed {endpoint}: {response.status_code}")
@@ -79,64 +49,98 @@ def fetch_oura_data():
     
     return all_data
 
-def upload_to_google_drive(data):
-    """Upload data to Google Drive"""
+def append_to_sheet(service, data):
+    """Append Oura data rows to Google Sheet"""
     try:
-        service = get_drive_service()
+        # Build a dict of data by date for easy lookup
+        by_date = {}
         
-        filename = "oura_data_latest.json"
-        content = json.dumps(data, indent=2)
+        # Sleep data
+        for item in data.get("daily_sleep", []):
+            date = item.get("day")
+            if date not in by_date:
+                by_date[date] = {}
+            by_date[date]["sleep_score"] = item.get("score", "")
+            by_date[date]["total_sleep_mins"] = item.get("total_sleep_duration", 0) // 60
+            by_date[date]["sleep_efficiency"] = item.get("efficiency", "")
         
-        # Search for existing file
-        results = service.files().list(
-            q=f"name='{filename}' and trashed=false",
-            spaces='drive',
-            pageSize=1,
-            fields='files(id, name)'
+        # Activity data
+        for item in data.get("daily_activity", []):
+            date = item.get("day")
+            if date not in by_date:
+                by_date[date] = {}
+            by_date[date]["activity_score"] = item.get("score", "")
+        
+        # Readiness data
+        for item in data.get("daily_readiness", []):
+            date = item.get("day")
+            if date not in by_date:
+                by_date[date] = {}
+            by_date[date]["readiness_score"] = item.get("score", "")
+        
+        # Heart rate data
+        for item in data.get("daily_heart_rate", []):
+            date = item.get("day")
+            if date not in by_date:
+                by_date[date] = {}
+            by_date[date]["heart_rate"] = item.get("resting_heart_rate", "")
+            by_date[date]["hrv"] = item.get("heart_rate_variability", "")
+        
+        # Stress data
+        for item in data.get("daily_stress", []):
+            date = item.get("day")
+            if date not in by_date:
+                by_date[date] = {}
+            by_date[date]["stress"] = item.get("stress_level", "")
+        
+        # Resilience data
+        for item in data.get("daily_resilience", []):
+            date = item.get("day")
+            if date not in by_date:
+                by_date[date] = {}
+            by_date[date]["resilience"] = item.get("resilience_level", "")
+        
+        # Convert to rows
+        rows = []
+        for date in sorted(by_date.keys()):
+            d = by_date[date]
+            row = [
+                date,
+                d.get("sleep_score", ""),
+                d.get("activity_score", ""),
+                d.get("readiness_score", ""),
+                d.get("heart_rate", ""),
+                d.get("hrv", ""),
+                d.get("stress", ""),
+                d.get("resilience", ""),
+                d.get("total_sleep_mins", ""),
+                d.get("sleep_efficiency", "")
+            ]
+            rows.append(row)
+        
+        if not rows:
+            print("No data to append")
+            return
+        
+        # Append to sheet
+        service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range="Sheet1!A2",
+            valueInputOption="RAW",
+            body={"values": rows}
         ).execute()
         
-        files = results.get('files', [])
+        print(f"✓ Appended {len(rows)} rows to Google Sheet")
         
-        if files:
-            # Update existing file
-            file_id = files[0]['id']
-            media = MediaFileUpload(
-                filename='temp.json',
-                mimetype='application/json',
-                chunksize=-1
-            )
-            # Write to temp file
-            with open('temp.json', 'w') as f:
-                f.write(content)
-            
-            service.files().update(
-                fileId=file_id,
-                media_body=media
-            ).execute()
-            print("✓ Updated file on Google Drive")
-        else:
-            # Create new file
-            with open('temp.json', 'w') as f:
-                f.write(content)
-            
-            file_metadata = {'name': filename}
-            media = MediaFileUpload('temp.json', mimetype='application/json')
-            
-            service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id'
-            ).execute()
-            print("✓ Created file on Google Drive")
-            
     except Exception as e:
-        print(f"✗ Error uploading to Google Drive: {e}")
+        print(f"✗ Error appending to sheet: {e}")
 
 def main():
     print("Starting Oura data fetch...")
     data = fetch_oura_data()
-    print("Uploading to Google Drive...")
-    upload_to_google_drive(data)
+    print("Appending to Google Sheet...")
+    service = get_sheets_service()
+    append_to_sheet(service, data)
     print("✓ Done!")
 
 if __name__ == "__main__":
