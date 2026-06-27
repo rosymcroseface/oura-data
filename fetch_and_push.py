@@ -1,14 +1,12 @@
 import requests
 import json
 import os
-import subprocess
+import base64
 from datetime import datetime, timedelta
-from pathlib import Path
 
 OURA_ACCESS_TOKEN = os.getenv("OURA_ACCESS_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = "oura-data"
-GITHUB_OWNER = os.getenv("GITHUB_USERNAME")
+GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 
 def fetch_oura_data():
     """Fetch all Oura data for last 30 days"""
@@ -51,27 +49,42 @@ def fetch_oura_data():
     return all_data
 
 def push_to_github(data):
-    """Save data to GitHub repo"""
+    """Push data to GitHub using API"""
     try:
         filename = "oura_data_latest.json"
+        content = json.dumps(data, indent=2)
         
-        # Save locally
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
+        # GitHub API URL
+        url = f"https://api.github.com/repos/{GITHUB_USERNAME}/oura-data/contents/{filename}"
         
-        # Configure git
-        subprocess.run(["git", "config", "user.email", "automation@oura.local"], check=True)
-        subprocess.run(["git", "config", "user.name", "Oura Automation"], check=True)
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
         
-        # Add and commit
-        subprocess.run(["git", "add", filename], check=True)
-        subprocess.run(["git", "commit", "-m", f"Update Oura data - {datetime.now().isoformat()}"], check=True)
+        # Encode content
+        encoded_content = base64.b64encode(content.encode()).decode()
         
-        # Push (uses GITHUB_TOKEN from environment)
-        subprocess.run(["git", "push"], check=True)
+        # Try to get existing file (to get sha for update)
+        existing = requests.get(url, headers=headers)
         
-        print(f"✓ Pushed to GitHub")
+        payload = {
+            "message": f"Update Oura data - {datetime.now().isoformat()}",
+            "content": encoded_content
+        }
         
+        if existing.status_code == 200:
+            # File exists, need sha to update
+            payload["sha"] = existing.json()["sha"]
+        
+        # Create or update
+        response = requests.put(url, headers=headers, json=payload)
+        
+        if response.status_code in [201, 200]:
+            print("✓ Pushed to GitHub")
+        else:
+            print(f"✗ GitHub error: {response.status_code} - {response.text}")
+            
     except Exception as e:
         print(f"✗ Error pushing to GitHub: {e}")
 
