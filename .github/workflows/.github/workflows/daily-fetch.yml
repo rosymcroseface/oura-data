@@ -2,7 +2,7 @@ name: Daily Oura Fetch
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # 6 AM daily
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -20,6 +20,5 @@ jobs:
       - name: Fetch and push Oura data
         env:
           OURA_ACCESS_TOKEN: ${{ secrets.OURA_ACCESS_TOKEN }}
-GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          GITHUB_USERNAME: rosymcroseface
+          GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
         run: python fetch_and_push.py
